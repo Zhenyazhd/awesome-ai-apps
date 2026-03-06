@@ -1,44 +1,50 @@
 import os
-import logging
-import asyncio
 from agents.mcp import MCPServerStdio
 
-logger = logging.getLogger(__name__)
-_mcp_server = None
 
-async def initialize_mcp_server():
-    """Initialize MCP server."""
-    global _mcp_server
-    
-    if _mcp_server:
-        return _mcp_server
-    
-    try:
-        server = MCPServerStdio(
-            cache_tools_list=False,
-            params={
-                "command": "npx",
-                "args": ["-y", "@brightdata/mcp"],
-                "env": {
-                    "API_TOKEN": os.environ["BRIGHT_DATA_API_KEY"],
-                    "WEB_UNLOCKER_ZONE": "mcp_unlocker",
-                    "BROWSER_AUTH": os.environ["BROWSER_AUTH"],
-                }
-            }
-        )
-        
-        await asyncio.wait_for(server.__aenter__(), timeout=10)
-        _mcp_server = server
-        return server
-            
-    except Exception as e:
-        logger.error(f"Error initializing MCP server: {e}")
-        return None
+def make_websearch_mcp_server() -> MCPServerStdio:
+    """Create a WebSearch MCP server instance for web search.
+    Requires the crawler Docker service running locally.
+    Set WEBSEARCH_API_URL (default: http://localhost:3001)."""
+    api_url = os.environ.get("WEBSEARCH_API_URL", "http://localhost:3001")
+    return MCPServerStdio(
+        cache_tools_list=True,
+        client_session_timeout_seconds=120,
+        params={
+            "command": "npx",
+            "args": ["websearch-mcp"],
+            "env": {
+                "API_URL": api_url,
+            },
+        },
+    )
 
-async def wait_for_initialization():
-    """Wait for MCP initialization to complete."""
-    return await initialize_mcp_server() is not None
 
-def get_mcp_server():
-    """Get the current MCP server instance."""
-    return _mcp_server 
+def make_firecrawl_mcp_server() -> MCPServerStdio:
+    """Create a Firecrawl MCP server instance for web search and scraping.
+    Requires FIRECRAWL_API_KEY environment variable.
+    Get your key at https://firecrawl.dev"""
+    api_key = os.environ["FIRECRAWL_API_KEY"]
+    return MCPServerStdio(
+        cache_tools_list=True,
+        client_session_timeout_seconds=120,
+        params={
+            "command": "npx",
+            "args": ["-y", "firecrawl-mcp"],
+            "env": {
+                "FIRECRAWL_API_KEY": api_key,
+            },
+        },
+    )
+
+
+def make_search_mcp_server() -> MCPServerStdio:
+    """Select search MCP provider based on SEARCH_PROVIDER env var.
+
+    SEARCH_PROVIDER=websearch  — cheap, requires Docker (default)
+    SEARCH_PROVIDER=firecrawl  — higher quality, requires FIRECRAWL_API_KEY
+    """
+    provider = os.environ.get("SEARCH_PROVIDER", "websearch").lower()
+    if provider == "firecrawl":
+        return make_firecrawl_mcp_server()
+    return make_websearch_mcp_server()

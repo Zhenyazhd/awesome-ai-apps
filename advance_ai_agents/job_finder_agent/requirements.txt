@@ -1,6 +1,7 @@
 streamlit
 python-dotenv
 openai
-openai-agents
+openai-agents>=0.10
 pydantic
-asyncio
+fpdf2
+crawl4ai

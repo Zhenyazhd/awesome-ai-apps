@@ -1,99 +1,212 @@
 import streamlit as st
 import asyncio
-import os
+import threading
 import logging
-import nest_asyncio
-import base64
 from dotenv import load_dotenv
 from job_agents import run_analysis
-from mcp_server import wait_for_initialization, get_mcp_server
 
-nest_asyncio.apply()
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# Set page config
+
+
 st.set_page_config(
-    page_title="LinkedIn Profile Analyzer",
+    page_title="Job Searcher Agent",
     page_icon="🔍",
     layout="wide"
 )
 
-# Initialize session state
-if 'analysis_result' not in st.session_state:
-    st.session_state.analysis_result = ""
-if 'is_analyzing' not in st.session_state:
-    st.session_state.is_analyzing = False
+for key, default in [
+    ("is_analyzing", False),
+    ("analysis_result", ""),
+    ("analysis_error", ""),
+    ("shared", None),
+    ("search_count", 0),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
-async def analyze_profile(linkedin_url: str):
+
+def run_in_thread(user_profile: str, filters: dict, shared: dict):
+    """Runs in background thread. Writes to shared dict (same object as in session_state)."""
+    def log(msg: str):
+        with shared["lock"]:
+            shared["log_messages"].append(msg)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        if not await wait_for_initialization():
-            st.error("Failed to initialize MCP server")
-            return
-            
-        result = await run_analysis(get_mcp_server(), linkedin_url)
-        st.session_state.analysis_result = result
+        result = loop.run_until_complete(
+            run_analysis(user_profile, filters, log_callback=log)
+        )
+        with shared["lock"]:
+            shared["result"] = result
     except Exception as e:
-        logger.error(f"Error analyzing LinkedIn profile: {str(e)}")
-        st.error(f"Error analyzing LinkedIn profile: {str(e)}")
+        logger.error(f"Error: {e}")
+        with shared["lock"]:
+            shared["error"] = str(e)
     finally:
-        st.session_state.is_analyzing = False
+        with shared["lock"]:
+            shared["done"] = True
+        loop.close()
+
 
 def main():
-    # Load and encode images
-    with open("./assets/bright-data-logo.png", "rb") as bright_data_file:
-        bright_data_base64 = base64.b64encode(bright_data_file.read()).decode()       
-    
-    # Create title with embedded images
-    title_html = f"""
-    <div style="display: flex; align-items: center; gap: 0px; margin: 0; padding: 0;">
-        <h1 style="margin: 0; padding: 0;">
-        Job Searcher Agent with 
-        <img src="data:image/png;base64,{bright_data_base64}" style="height: 110px; margin: 0; padding: 0;"/>
-        </h1>
-    </div>
-    """
-    st.markdown(title_html, unsafe_allow_html=True)
+    st.title("Job Searcher Agent")
     st.markdown("---")
 
-    # Sidebar
     with st.sidebar:
-        st.image("./assets/Nebius.png", width=150)
-        api_key = st.text_input("Enter your API key", type="password")
-        st.divider()
-        
-        st.subheader("Enter LinkedIn Profile URL")
-        linkedin_url = st.text_input("LinkedIn URL", placeholder="https://www.linkedin.com/in/username/")
-        
-        if st.button("Analyze Profile", type="primary", disabled=st.session_state.is_analyzing):
-            if not linkedin_url:
-                st.error("Please enter a LinkedIn profile URL")
+        st.subheader("Your Profile")
+        experience = st.text_area(
+            "Experience & Resume",
+            placeholder="Paste your resume or describe your work experience, skills, education...",
+            height=180,
+        )
+        motivation = st.text_area(
+            "Motivation (optional)",
+            placeholder="What kind of role are you looking for? Goals, values, interests...",
+            height=100,
+        )
+
+        st.subheader("Job Filters")
+
+        sources = st.multiselect(
+            "Sources",
+            [
+                "YC Startup Jobs", "Indeed", "Greenhouse", "Lever", "Ashby",
+                "Remote Rocketship", "LinkedIn", "Welcome to the Jungle", "Pinpoint",
+                "Jobs Subdomain", "Careers Pages", "People Subdomain", "Talent Subdomain",
+                "Wellfound", "Workable", "BreezyHR", "Workday Jobs", "Recruitee",
+                "Teamtailor", "SmartRecruiters", "JazzHR", "Jobvite", "iCIMS",
+                "Dover", "Builtin", "Glassdoor", "Paylocity", "Keka", "Oracle Cloud",
+                "Rippling", "CareerPuck", "TalentReef", "Homerun", "Trakstar",
+                "ADP", "Factorial", "TriNet Hire",
+                "HelloWork", "Eureka Education", "GGE Edu",
+            ],
+            default=["YC Startup Jobs", "Indeed"],
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            remote = st.checkbox("Remote only")
+        with col2:
+            num_results = st.number_input("# Results", min_value=1, max_value=20, value=5)
+
+        location = st.text_input(
+            "Preferred location",
+            placeholder="e.g. New York, London, EU...",
+        )
+
+        experience_level = st.selectbox(
+            "Experience level",
+            ["Any", "Junior", "Mid", "Senior", "Lead / Staff"],
+        )
+
+        period = st.selectbox(
+            "Posted within",
+            ["Any", "Last 24h", "Last week", "Last month"],
+        )
+
+        salary_range = st.text_input(
+            "Expected salary (optional)",
+            placeholder="e.g. $80k–$120k, €60k+",
+        )
+
+        if st.session_state.is_analyzing:
+            st.info("Search in progress...")
+
+        clicked = st.button(
+            "Find Jobs",
+            type="primary",
+            disabled=st.session_state.is_analyzing,
+        )
+
+        if clicked:
+            if not experience:
+                st.error("Please describe your experience")
                 return
-            if not api_key:
-                st.error("Please enter your API key")
+            if not sources:
+                st.error("Please select at least one source")
                 return
 
-            st.session_state.is_analyzing = True
+            user_profile = experience
+            if motivation:
+                user_profile += f"\n\nMotivation:\n{motivation}"
+
+            filters = {
+                "sources": sources,
+                "remote": remote,
+                "num_results": int(num_results),
+                "location": location,
+                "experience_level": experience_level,
+                "period": period,
+                "salary_range": salary_range,
+            }
+
+            # Reset all state for a fresh search
             st.session_state.analysis_result = ""
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(analyze_profile(linkedin_url))
-            finally:
-                loop.close()
+            st.session_state.analysis_error = ""
+            st.session_state.shared = None
+            st.session_state.search_count += 1
 
-    # Results section
+            # Create shared dict — stored in session_state so it survives reruns
+            shared = {"log_messages": [], "result": "", "error": "", "done": False, "lock": threading.Lock()}
+            st.session_state.shared = shared
+            st.session_state.is_analyzing = True
+
+            threading.Thread(
+                target=run_in_thread,
+                args=(user_profile, filters, shared),
+                daemon=True,
+            ).start()
+            st.rerun()
+
+    # Progress block — uses fragment so only this section reruns (no tab flicker)
+    @st.fragment(run_every=0.5)
+    def show_progress():
+        if not st.session_state.is_analyzing or not st.session_state.shared:
+            return
+        shared = st.session_state.shared
+
+        with shared["lock"]:
+            messages = list(shared["log_messages"])
+            done = shared["done"]
+            result = shared["result"]
+            error = shared["error"]
+
+        with st.container(border=True):
+            st.caption("Progress")
+            for msg in messages:
+                st.write(f"✓ {msg}")
+            if not done:
+                st.write("⏳ Working...")
+
+        if done:
+            st.session_state.is_analyzing = False
+            st.session_state.analysis_result = result
+            st.session_state.analysis_error = error
+            st.rerun()
+
+    show_progress()
+
+    if st.session_state.analysis_error:
+        st.error(st.session_state.analysis_error)
+
     if st.session_state.analysis_result:
-        st.subheader("Analysis Results")
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.subheader("Results")
+        with col2:
+            st.download_button(
+                label="Download MD",
+                data=st.session_state.analysis_result,
+                file_name="job_search_results.md",
+                mime="text/markdown",
+            )
         st.markdown(st.session_state.analysis_result)
 
-    # Loading state
-    if st.session_state.is_analyzing:
-        st.markdown("---")
-        with st.spinner("Analyzing profile... This may take a few minutes."):
-            st.empty()
 
 if __name__ == "__main__":
     main()
