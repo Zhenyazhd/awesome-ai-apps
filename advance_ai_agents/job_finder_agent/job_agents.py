@@ -337,7 +337,7 @@ async def run_analysis(user_profile: str, filters: dict | None = None, log_callb
     experience_level = filters.get("experience_level", "Any")
     sources = filters.get("sources", ["YC Startup Jobs", "Indeed"])
 
-    model = OpenAIChatCompletionsModel(model="openai/gpt-5.2", openai_client=client)
+    model = OpenAIChatCompletionsModel(model="openai/gpt-4o-mini", openai_client=client)
 
     async with make_search_mcp_server() as mcp_server:
         log("MCP server ready")
